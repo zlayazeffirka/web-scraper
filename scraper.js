@@ -10,9 +10,14 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function saveData(source, data) {
   const path = `./data/${source}.yaml`;
   const oldData = fs.existsSync(path) ? yaml.load(fs.readFileSync(path, 'utf8')) : [];
+  
+  // Добавляем новую запись в массив
   oldData.push(data);
-  fs.writeFileSync(path, yaml.dump(oldData));
+  
+  // Сохраняем данные, сериализуя их в YAML
+  fs.writeFileSync(path, yaml.dump(oldData), 'utf8');
 }
+
 
 // Функция для выполнения запросов к источникам с парсингом по селекторам
 async function fetchData(url, source, selector) {
