@@ -1,8 +1,20 @@
 const fs = require('fs');
 const yaml = require('js-yaml');
 
-// Функция для анализа количества слов
-function wordCount(text) {
+// Функция для анализа количества слов в тексте или массиве строк
+function wordCount(textArrayOrString) {
+  let text;
+
+  // Проверяем, является ли textArrayOrString массивом
+  if (Array.isArray(textArrayOrString)) {
+    // Объединяем все строки из массива в один текст
+    text = textArrayOrString.join(' ');
+  } else {
+    // Если это не массив, то считаем, что это строка
+    text = textArrayOrString;
+  }
+
+  // Разбиваем текст на слова и считаем их количество
   return text ? text.split(/\s+/).length : 0;
 }
 
@@ -19,7 +31,15 @@ function analyzeDataset(source) {
   
   const recordCount = data.length;
   const wordCounts = data.map(entry => wordCount(entry.content));
-  const uniqueWords = new Set(data.flatMap(entry => entry.content.split(/\s+/)));
+  
+  // Обрабатываем все слова из всех записей как один набор уникальных слов
+  const uniqueWords = new Set(
+    data.flatMap(entry => 
+      Array.isArray(entry.content) 
+        ? entry.content.join(' ').split(/\s+/)  // если content - массив
+        : entry.content.split(/\s+/)            // если content - строка
+    )
+  );
 
   const minWords = Math.min(...wordCounts);
   const maxWords = Math.max(...wordCounts);
