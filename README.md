@@ -10,3 +10,6 @@
 
 `node analyze.js`
 
+**При создании бд сперва запустить:**
+
+`npm install pg`
