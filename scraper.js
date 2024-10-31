@@ -1,7 +1,8 @@
 const fs = require('fs');
 const request = require('request-promise');
 const yaml = require('js-yaml');
-const cheerio = require('cheerio'); // для работы с DOM
+const cheerio = require('cheerio');
+const { Client } = require('pg'); // Подключаем модуль PostgreSQL
 
 // Задержка между запросами в миллисекундах
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,6 +12,106 @@ function cleanText(text) {
   return text.replace(/[^\w\sа-яА-ЯёЁ]/g, '').trim();
 }
 
+// Подключение к базе данных PostgreSQL
+const client = new Client({
+  user: 'postgres',
+  host: 'localhost',
+  database: 'WEB_SCRAPER',
+  password: 'postgres',
+  port: 5432,
+});
+
+// Подключение к базе данных
+client.connect();
+
+// Функция для создания таблицы, если ее еще нет
+async function createTable(source) {
+  let createTableQuery = '';
+
+  switch (source) {
+    case 'judo_ru_event':
+    case 'judoka24_event':
+      createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${source} (
+          id SERIAL PRIMARY KEY,
+          name TEXT,
+          region TEXT
+        );
+      `;
+      break;
+    case 'paralymp_news':
+      createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${source} (
+          id SERIAL PRIMARY KEY,
+          name TEXT
+        );
+      `;
+      break;
+    case 'mossambo_games':
+      createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${source} (
+          id SERIAL PRIMARY KEY,
+          event_name TEXT
+        );
+      `;
+      break;
+    case 'cfo_judo_games':
+      createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${source} (
+          id SERIAL PRIMARY KEY,
+          date_start TEXT,
+          date_finish TEXT,
+          event_name TEXT,
+          location TEXT,
+          categories TEXT
+        );
+      `;
+      break;
+    default:
+      createTableQuery = `
+        CREATE TABLE IF NOT EXISTS ${source} (
+          id SERIAL PRIMARY KEY,
+          raw_content TEXT
+        );
+      `;
+  }
+
+  await client.query(createTableQuery);
+}
+
+// Функция для сохранения данных в базу данных PostgreSQL
+async function saveDataToDB(source, data) {
+  await createTable(source);
+
+  const insertPromises = data.content.map(entry => {
+    let insertQuery = '';
+    const values = Object.values(entry);
+
+    switch (source) {
+      case 'judo_ru_event':
+      case 'judoka24_event':
+        insertQuery = `INSERT INTO ${source} (name, region) VALUES ($1, $2);`;
+        break;
+      case 'paralymp_news':
+        insertQuery = `INSERT INTO ${source} (name) VALUES ($1);`;
+        break;
+      case 'mossambo_games':
+        insertQuery = `INSERT INTO ${source} (event_name) VALUES ($1);`;
+        break;
+      case 'cfo_judo_games':
+        insertQuery = `INSERT INTO ${source} (date_start, date_finish, event_name, location, categories) VALUES ($1, $2, $3, $4, $5);`;
+        break;
+      default:
+        insertQuery = `INSERT INTO ${source} (raw_content) VALUES ($1);`;
+    }
+
+    return client.query(insertQuery, values);
+  });
+
+  await Promise.all(insertPromises);
+  console.log(`Данные для ${source} сохранены в базу данных`);
+}
+
 // Функция для извлечения структурированных данных из текста для разных источников
 function parseContent(source, texts) {
   const structuredData = [];
@@ -18,86 +119,62 @@ function parseContent(source, texts) {
   switch (source) {
     case 'judo_ru_event':
     case 'judoka24_event':
-      // Формат: [фамилия, имя, регион, фамилия, имя, регион, ...]
       for (let i = 0; i < texts.length; i += 2) {
         structuredData.push({
-          name: cleanText(texts[i]),   // Фамилия и имя
-          region: cleanText(texts[i + 1] || '') // Регион (проверка на undefined)
+          name: cleanText(texts[i]),
+          region: cleanText(texts[i + 1] || '')
         });
       }
       break;
-
     case 'paralymp_news':
-      // Формат: каждый элемент - фамилия и имя
       texts.forEach(text => {
         structuredData.push({
-          name: cleanText(text) // Фамилия и имя
+          name: cleanText(text)
         });
       });
       break;
-
     case 'mossambo_games':
-      // Формат: каждый элемент - название мероприятия
       texts.forEach(text => {
         structuredData.push({
-          eventName: cleanText(text) // Название мероприятия
+          eventName: cleanText(text)
         });
       });
       break;
-
     case 'cfo_judo_games':
-      // Формат: каждая строка делится по символу '\n' на 4 части: дата, название, место, категории участников
       texts.forEach(text => {
-        const parts = text.split('\n').map(part => cleanText(part)); // Разделяем по '\n' и очищаем
-        if (parts.length >= 6) { // Убедимся, что есть все 4 части
+        const parts = text.split('\n').map(part => cleanText(part));
+        if (parts.length >= 6) {
           structuredData.push({
             date_start: parts[2],
-            date_finish: parts[3],           // Дата проведения
-            eventName: parts[4],      // Название мероприятия
-            location: parts[5],       // Место проведения
-            categories: parts[6]      // Категории участников
+            date_finish: parts[3],
+            eventName: parts[4],
+            location: parts[5],
+            categories: parts[6]
           });
         }
       });
       break;
-
     default:
-      // Если структура неизвестна, сохраняем в "сырую" структуру
       structuredData.push({ rawContent: texts.join(' ') });
   }
 
   return structuredData;
 }
 
-// Функция для сохранения данных в файл
-function saveData(source, data) {
-  const path = `./data/${source}.yaml`;
-  const oldData = fs.existsSync(path) ? yaml.load(fs.readFileSync(path, 'utf8')) : [];
-
-  // Добавляем новую запись в массив
-  oldData.push(data);
-
-  // Сохраняем данные, сериализуя их в YAML
-  fs.writeFileSync(path, yaml.dump(oldData), 'utf8');
-}
-
 // Функция для выполнения запросов к источникам с парсингом по селекторам
 async function fetchData(url, source, selector) {
   try {
     const response = await request(url);
-    const $ = cheerio.load(response); // загружаем HTML на страницу с помощью cheerio
+    const $ = cheerio.load(response);
 
-    // Извлекаем текст по переданному селектору
     const texts = Array.from($(selector)).map(element => $(element).text());
 
-    // Разделение текста на структурированные элементы в зависимости от источника
     const structuredContent = parseContent(source, texts);
 
     const data = { url, content: structuredContent, timestamp: new Date() };
     console.log(`Данные получены и распарсены с ${url}`);
 
-    // Сохраняем данные по мере поступления
-    saveData(source, data);
+    await saveDataToDB(source, data);
   } catch (error) {
     console.error(`Ошибка при запросе к ${url}:`, error.message);
   }
@@ -113,16 +190,17 @@ async function scrape() {
     { url: 'https://cfo-judo.ru/games/', source: 'cfo_judo_games', selector: '.main_calendar_all' }
   ];
 
-  // Создаем папку для сохранения данных, если ее нет
   if (!fs.existsSync('./data')) {
     fs.mkdirSync('./data');
   }
 
-  // Перебор всех источников с задержкой
   for (const { url, source, selector } of sources) {
     await fetchData(url, source, selector);
-    await delay(3000); // задержка в 3 секунды между запросами
+    await delay(3000);
   }
+
+  // Закрытие подключения к базе данных после завершения работы
+  await client.end();
 }
 
 // Запуск скрипта
