@@ -2,7 +2,7 @@ const fs = require('fs');
 const request = require('request-promise');
 const yaml = require('js-yaml');
 const cheerio = require('cheerio');
-const { Client } = require('pg'); // Подключаем модуль PostgreSQL
+const { Sequelize, DataTypes } = require('sequelize');
 
 // Задержка между запросами в миллисекундах
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -12,103 +12,53 @@ function cleanText(text) {
   return text.replace(/[^\w\sа-яА-ЯёЁ]/g, '').trim();
 }
 
-// Подключение к базе данных PostgreSQL
-const client = new Client({
-  user: 'postgres',
+// Настройка подключения к базе данных PostgreSQL через Sequelize
+const sequelize = new Sequelize('WEB_SCRAPER', 'postgres', 'postgres', {
   host: 'localhost',
-  database: 'WEB_SCRAPER',
-  password: 'postgres',
-  port: 5432,
+  dialect: 'postgres'
 });
 
-// Подключение к базе данных
-client.connect();
-
-// Функция для создания таблицы, если ее еще нет
-async function createTable(source) {
-  let createTableQuery = '';
-
+// Функция для создания модели таблицы в зависимости от источника
+function defineModel(source) {
   switch (source) {
     case 'judo_ru_event':
     case 'judoka24_event':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          name TEXT,
-          region TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        name: { type: DataTypes.TEXT },
+        region: { type: DataTypes.TEXT }
+      });
+      
     case 'paralymp_news':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          name TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        name: { type: DataTypes.TEXT }
+      });
+      
     case 'mossambo_games':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          event_name TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        eventName: { type: DataTypes.TEXT }
+      });
+      
     case 'cfo_judo_games':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          date_start TEXT,
-          date_finish TEXT,
-          event_name TEXT,
-          location TEXT,
-          categories TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        date_start: { type: DataTypes.TEXT },
+        date_finish: { type: DataTypes.TEXT },
+        eventName: { type: DataTypes.TEXT },
+        location: { type: DataTypes.TEXT },
+        categories: { type: DataTypes.TEXT }
+      });
+      
     default:
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          raw_content TEXT
-        );
-      `;
+      return sequelize.define(source, {
+        rawContent: { type: DataTypes.TEXT }
+      });
   }
-
-  await client.query(createTableQuery);
 }
 
-// Функция для сохранения данных в базу данных PostgreSQL
+// Функция для сохранения данных в базу данных PostgreSQL через Sequelize
 async function saveDataToDB(source, data) {
-  await createTable(source);
-
-  const insertPromises = data.content.map(entry => {
-    let insertQuery = '';
-    const values = Object.values(entry);
-
-    switch (source) {
-      case 'judo_ru_event':
-      case 'judoka24_event':
-        insertQuery = `INSERT INTO ${source} (name, region) VALUES ($1, $2);`;
-        break;
-      case 'paralymp_news':
-        insertQuery = `INSERT INTO ${source} (name) VALUES ($1);`;
-        break;
-      case 'mossambo_games':
-        insertQuery = `INSERT INTO ${source} (event_name) VALUES ($1);`;
-        break;
-      case 'cfo_judo_games':
-        insertQuery = `INSERT INTO ${source} (date_start, date_finish, event_name, location, categories) VALUES ($1, $2, $3, $4, $5);`;
-        break;
-      default:
-        insertQuery = `INSERT INTO ${source} (raw_content) VALUES ($1);`;
-    }
-
-    return client.query(insertQuery, values);
-  });
-
-  await Promise.all(insertPromises);
+  const Model = defineModel(source);
+  await Model.sync();  // Создаем таблицу, если ее нет
+  await Model.bulkCreate(data.content);
   console.log(`Данные для ${source} сохранены в базу данных`);
 }
 
@@ -128,16 +78,12 @@ function parseContent(source, texts) {
       break;
     case 'paralymp_news':
       texts.forEach(text => {
-        structuredData.push({
-          name: cleanText(text)
-        });
+        structuredData.push({ name: cleanText(text) });
       });
       break;
     case 'mossambo_games':
       texts.forEach(text => {
-        structuredData.push({
-          eventName: cleanText(text)
-        });
+        structuredData.push({ eventName: cleanText(text) });
       });
       break;
     case 'cfo_judo_games':
@@ -168,9 +114,7 @@ async function fetchData(url, source, selector) {
     const $ = cheerio.load(response);
 
     const texts = Array.from($(selector)).map(element => $(element).text());
-
     const structuredContent = parseContent(source, texts);
-
     const data = { url, content: structuredContent, timestamp: new Date() };
     console.log(`Данные получены и распарсены с ${url}`);
 
@@ -200,7 +144,7 @@ async function scrape() {
   }
 
   // Закрытие подключения к базе данных после завершения работы
-  await client.end();
+  await sequelize.close();
 }
 
 // Запуск скрипта
