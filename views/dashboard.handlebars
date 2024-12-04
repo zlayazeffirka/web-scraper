@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="/css/bootstrap.min.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Данные из источников</h1>
+    <h2>Judo Events</h2>
+    <ul>
+      {{#each judoData}}
+        <li>{{this.name}} - {{this.region}}</li>
+      {{/each}}
+    </ul>
+    <h2>Paralymp News</h2>
+    <ul>
+      {{#each paralympData}}
+        <li>{{this.name}}</li>
+      {{/each}}
+    </ul>
+  </div>
+</body>
+</html>

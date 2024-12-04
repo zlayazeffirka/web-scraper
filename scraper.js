@@ -1,9 +1,21 @@
 const fs = require('fs');
 const request = require('request-promise');
-const yaml = require('js-yaml');
 const cheerio = require('cheerio');
-const { Client } = require('pg');
-const cron = require('node-cron'); // Для cron-задач
+const { Sequelize, DataTypes } = require('sequelize');
+const express = require('express');
+
+// Создание Express приложения
+const app = express();
+const PORT = 3000;
+
+// Устанавливаем EJS как шаблонизатор
+app.set('view engine', 'ejs');
+
+// Настройка подключения к базе данных PostgreSQL через Sequelize
+const sequelize = new Sequelize('WEB_SCRAPER', 'postgres', 'postgres', {
+  host: 'localhost',
+  dialect: 'postgres'
+});
 
 // Задержка между запросами в миллисекундах
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -13,122 +25,40 @@ function cleanText(text) {
   return text.replace(/[^\w\sа-яА-ЯёЁ]/g, '').trim();
 }
 
-// Подключение к базе данных PostgreSQL
-const client = new Client({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'WEB_SCRAPER',
-  password: 'postgres',
-  port: 5432,
-});
-
-// Подключение к базе данных
-client.connect();
-
-// Функция для создания таблицы, если ее еще нет
-async function createTable(source) {
-  let createTableQuery = '';
-  const createTaskStatusTable = `
-    CREATE TABLE IF NOT EXISTS task_status (
-      id SERIAL PRIMARY KEY,
-      task_name TEXT,
-      status TEXT,
-      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-  await client.query(createTaskStatusTable);
-
+// Функция для создания модели таблицы в зависимости от источника
+function defineModel(source) {
   switch (source) {
-    case 'judo_ru_event':
+    case 'judo_events':
     case 'judoka24_event':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          name TEXT,
-          region TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        name: { type: DataTypes.TEXT },
+        region: { type: DataTypes.TEXT }
+      });
+      
     case 'paralymp_news':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          name TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        name: { type: DataTypes.TEXT }
+      });
+      
     case 'mossambo_games':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          event_name TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        eventName: { type: DataTypes.TEXT }
+      });
+      
     case 'cfo_judo_games':
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          date_start TEXT,
-          date_finish TEXT,
-          event_name TEXT,
-          location TEXT,
-          categories TEXT
-        );
-      `;
-      break;
+      return sequelize.define(source, {
+        date_start: { type: DataTypes.TEXT },
+        date_finish: { type: DataTypes.TEXT },
+        eventName: { type: DataTypes.TEXT },
+        location: { type: DataTypes.TEXT },
+        categories: { type: DataTypes.TEXT }
+      });
+      
     default:
-      createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${source} (
-          id SERIAL PRIMARY KEY,
-          raw_content TEXT
-        );
-      `;
+      return sequelize.define(source, {
+        rawContent: { type: DataTypes.TEXT }
+      });
   }
-
-  await client.query(createTableQuery);
-}
-
-// Функция для записи статуса задачи
-async function recordTaskStatus(taskName, status) {
-  const insertStatusQuery = `
-    INSERT INTO task_status (task_name, status) VALUES ($1, $2);
-  `;
-  await client.query(insertStatusQuery, [taskName, status]);
-  console.log(`Статус задачи ${taskName}: ${status}`);
-}
-
-// Функция для сохранения данных в базу данных PostgreSQL
-async function saveDataToDB(source, data) {
-  await createTable(source);
-
-  const insertPromises = data.content.map(entry => {
-    let insertQuery = '';
-    const values = Object.values(entry);
-
-    switch (source) {
-      case 'judo_ru_event':
-      case 'judoka24_event':
-        insertQuery = `INSERT INTO ${source} (name, region) VALUES ($1, $2);`;
-        break;
-      case 'paralymp_news':
-        insertQuery = `INSERT INTO ${source} (name) VALUES ($1);`;
-        break;
-      case 'mossambo_games':
-        insertQuery = `INSERT INTO ${source} (event_name) VALUES ($1);`;
-        break;
-      case 'cfo_judo_games':
-        insertQuery = `INSERT INTO ${source} (date_start, date_finish, event_name, location, categories) VALUES ($1, $2, $3, $4, $5);`;
-        break;
-      default:
-        insertQuery = `INSERT INTO ${source} (raw_content) VALUES ($1);`;
-    }
-
-    return client.query(insertQuery, values);
-  });
-
-  await Promise.all(insertPromises);
-  console.log(`Данные для ${source} сохранены в базу данных`);
 }
 
 // Функция для извлечения структурированных данных из текста для разных источников
@@ -136,7 +66,7 @@ function parseContent(source, texts) {
   const structuredData = [];
 
   switch (source) {
-    case 'judo_ru_event':
+    case 'judo_events':
     case 'judoka24_event':
       for (let i = 0; i < texts.length; i += 2) {
         structuredData.push({
@@ -147,16 +77,12 @@ function parseContent(source, texts) {
       break;
     case 'paralymp_news':
       texts.forEach(text => {
-        structuredData.push({
-          name: cleanText(text)
-        });
+        structuredData.push({ name: cleanText(text) });
       });
       break;
     case 'mossambo_games':
       texts.forEach(text => {
-        structuredData.push({
-          eventName: cleanText(text)
-        });
+        structuredData.push({ eventName: cleanText(text) });
       });
       break;
     case 'cfo_judo_games':
@@ -187,22 +113,23 @@ async function fetchData(url, source, selector) {
     const $ = cheerio.load(response);
 
     const texts = Array.from($(selector)).map(element => $(element).text());
-
     const structuredContent = parseContent(source, texts);
-
     const data = { url, content: structuredContent, timestamp: new Date() };
     console.log(`Данные получены и распарсены с ${url}`);
 
-    await saveDataToDB(source, data);
+    const Model = defineModel(source);
+    await Model.sync();  // Создаем таблицу, если ее нет
+    await Model.bulkCreate(structuredContent);  // Сохраняем данные
+    console.log(`Данные для ${source} сохранены в базу данных`);
   } catch (error) {
-    console.error(`Ошибка при запросе к ${url}:`, error.message);
+    console.error(`Ошибка при обработке ${url}:`, error.message);
   }
 }
 
 // Основная функция для работы с несколькими источниками
 async function scrape() {
   const sources = [
-    { url: 'https://online.judo.ru/event/11978', source: 'judo_ru_event', selector: '.text_cell200' },
+    { url: 'https://online.judo.ru/event/11978', source: 'judo_events', selector: '.text_cell200' },
     { url: 'https://paralymp.ru/press_center/news/dzyudo/17-05-2023-opredeleny_pobediteli_chempionata_rossii_po_dzyudo_sporta_slepykh/', source: 'paralymp_news', selector: '.tooltip' },
     { url: 'https://online.judoka24.ru/event/98', source: 'judoka24_event', selector: '.text_cell200' },
     { url: 'https://mossambo.ru/games/all?category_id=all&year=2023', source: 'mossambo_games', selector: '.title' },
@@ -219,12 +146,34 @@ async function scrape() {
   }
 
   // Закрытие подключения к базе данных после завершения работы
-  await client.end();
+  await sequelize.close();
 }
 
-// Настройка cron-задачи для запуска скрипта каждый день в 00:00
-cron.schedule('0 0 * * *', async () => {
-  await recordTaskStatus('scrape_task', 'STARTED');
-  await scrape();
-  await recordTaskStatus('scrape_task', 'COMPLETED');
+// Маршрут для отображения данных из базы
+app.get('/', async (req, res) => {
+  try {
+    const sources = ['judo_events', 'paralymp_news', 'judoka24_event', 'mossambo_games', 'cfo_judo_games'];
+    const data = {};
+
+    for (const source of sources) {
+      const Model = defineModel(source);
+      await Model.sync();
+      data[source] = await Model.findAll(); // Получаем данные из каждой таблицы
+    }
+
+    res.render('index', { data }); // Рендерим страницу с данными
+  } catch (error) {
+    console.error('Ошибка при получении данных:', error.message);
+    res.status(500).send('Ошибка сервера');
+  }
 });
+
+// Запуск сервера
+app.listen(PORT, () => {
+  console.log(`Сервер запущен на http://localhost:${PORT}`);
+});
+
+// Запуск скрипта
+(async () => {
+  await scrape();
+})();
